@@ -1,0 +1,32 @@
+# ═══════════════════════════════════════════════════════════
+# LANDFILL MANAGEMENT SYSTEM - DEPENDENCIES
+# ═══════════════════════════════════════════════════════════
+
+# Core Framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Database
+sqlalchemy[asyncio]>=2.0.25
+asyncpg>=0.29.0
+alembic>=1.13.0
+
+# Authentication & Security
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+bcrypt==4.0.1  # Pinned for passlib compatibility
+pyotp>=2.9.0
+qrcode[pil]>=7.4.2
+
+# Validation
+email-validator>=2.1.0
+
+# HTTP & File Handling
+python-multipart>=0.0.6
+aiofiles>=23.2.1
+
+# Rate Limiting
+slowapi>=0.1.9
