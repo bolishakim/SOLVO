@@ -77,15 +77,32 @@ class AuditService:
 
     async def log_login(
         self,
-        user_id: int,
+        user_id: int | None = None,
         success: bool = True,
         ip_address: str | None = None,
         user_agent: str | None = None,
         failure_reason: str | None = None,
+        attempted_username: str | None = None,
     ) -> AuditLog:
-        """Log a login attempt."""
+        """Log a login attempt.
+
+        Args:
+            user_id: User ID (required for success, optional for failure)
+            success: Whether login was successful
+            ip_address: Client IP address
+            user_agent: Client user agent
+            failure_reason: Reason for failure (for failed logins)
+            attempted_username: The username/email that was attempted (for failed logins)
+        """
         action_type = ActionType.LOGIN if success else ActionType.LOGIN_FAILED
-        description = "User logged in successfully" if success else f"Login failed: {failure_reason or 'Invalid credentials'}"
+        description = "Benutzer erfolgreich angemeldet" if success else f"Anmeldung fehlgeschlagen: {failure_reason or 'Ungültige Anmeldedaten'}"
+
+        # Build changes dict for failed logins
+        changes = None
+        if not success:
+            changes = {"failed_reason": failure_reason}
+            if attempted_username:
+                changes["attempted_username"] = attempted_username
 
         return await self.log_action(
             action_type=action_type,
@@ -95,7 +112,7 @@ class AuditService:
             description=description,
             ip_address=ip_address,
             user_agent=user_agent,
-            changes={"failed_reason": failure_reason} if not success else None,
+            changes=changes,
         )
 
     async def log_logout(
@@ -111,7 +128,7 @@ class AuditService:
             user_id=user_id,
             entity_type=EntityType.SESSION,
             entity_id=session_id,
-            description="User logged out",
+            description="Benutzer abgemeldet",
             ip_address=ip_address,
             user_agent=user_agent,
         )
@@ -130,7 +147,7 @@ class AuditService:
             user_id=user_id,
             entity_type=EntityType.USER,
             entity_id=user_id,
-            description=f"New user registered: {username}",
+            description=f"Neuer Benutzer registriert: {username}",
             ip_address=ip_address,
             user_agent=user_agent,
             changes={"new": {"username": username, "email": email}},
@@ -148,7 +165,7 @@ class AuditService:
             user_id=user_id,
             entity_type=EntityType.USER,
             entity_id=user_id,
-            description="User changed password",
+            description="Passwort geändert",
             ip_address=ip_address,
             user_agent=user_agent,
         )
@@ -168,7 +185,7 @@ class AuditService:
             user_id=updated_by,
             entity_type=EntityType.USER,
             entity_id=user_id,
-            description=f"User profile updated",
+            description=f"Benutzerprofil aktualisiert",
             ip_address=ip_address,
             user_agent=user_agent,
             changes={"old": old_values, "new": new_values},
@@ -187,7 +204,7 @@ class AuditService:
             user_id=deactivated_by,
             entity_type=EntityType.USER,
             entity_id=user_id,
-            description=f"User account deactivated",
+            description=f"Benutzerkonto deaktiviert",
             ip_address=ip_address,
             user_agent=user_agent,
         )
@@ -207,7 +224,7 @@ class AuditService:
             user_id=assigned_by,
             entity_type=EntityType.ROLE,
             entity_id=role_id,
-            description=f"Role '{role_name}' assigned to user {user_id}",
+            description=f"Rolle '{role_name}' dem Benutzer {user_id} zugewiesen",
             ip_address=ip_address,
             user_agent=user_agent,
             changes={"new": {"user_id": user_id, "role_id": role_id, "role_name": role_name}},
@@ -228,7 +245,7 @@ class AuditService:
             user_id=removed_by,
             entity_type=EntityType.ROLE,
             entity_id=role_id,
-            description=f"Role '{role_name}' removed from user {user_id}",
+            description=f"Rolle '{role_name}' vom Benutzer {user_id} entfernt",
             ip_address=ip_address,
             user_agent=user_agent,
             changes={"old": {"user_id": user_id, "role_id": role_id, "role_name": role_name}},
@@ -248,7 +265,7 @@ class AuditService:
             user_id=revoked_by,
             entity_type=EntityType.SESSION,
             entity_id=session_id,
-            description=f"Session revoked for user {user_id}",
+            description=f"Sitzung für Benutzer {user_id} widerrufen",
             ip_address=ip_address,
             user_agent=user_agent,
         )
@@ -267,7 +284,7 @@ class AuditService:
             user_id=revoked_by,
             entity_type=EntityType.SESSION,
             entity_id=user_id,
-            description=f"All sessions revoked for user {user_id} ({count} sessions)",
+            description=f"Alle Sitzungen für Benutzer {user_id} widerrufen ({count} Sitzungen)",
             ip_address=ip_address,
             user_agent=user_agent,
             changes={"sessions_revoked": count},
@@ -285,7 +302,7 @@ class AuditService:
             user_id=user_id,
             entity_type=EntityType.TWO_FACTOR,
             entity_id=user_id,
-            description="Two-factor authentication enabled",
+            description="Zwei-Faktor-Authentifizierung aktiviert",
             ip_address=ip_address,
             user_agent=user_agent,
         )
@@ -302,7 +319,7 @@ class AuditService:
             user_id=user_id,
             entity_type=EntityType.TWO_FACTOR,
             entity_id=user_id,
-            description="Two-factor authentication disabled",
+            description="Zwei-Faktor-Authentifizierung deaktiviert",
             ip_address=ip_address,
             user_agent=user_agent,
         )
@@ -320,7 +337,7 @@ class AuditService:
             user_id=user_id,
             entity_type=EntityType.TWO_FACTOR,
             entity_id=user_id,
-            description=f"Two-factor authentication verified using {method}",
+            description=f"Zwei-Faktor-Authentifizierung mit {method} verifiziert",
             ip_address=ip_address,
             user_agent=user_agent,
             changes={"method": method},
@@ -535,17 +552,28 @@ class AuditService:
         self,
         user_id: int | None = None,
         limit: int = 50,
+        status_filter: str | None = None,
     ) -> list[AuditLog]:
-        """Get login/logout history."""
+        """Get login/logout history.
+
+        Args:
+            user_id: Filter by specific user (optional)
+            limit: Max entries to return
+            status_filter: Filter by action type - 'LOGIN', 'LOGIN_FAILED', or 'LOGOUT' (optional)
+        """
+        # Build action type filter
+        if status_filter:
+            action_types = [status_filter]
+        else:
+            action_types = [
+                ActionType.LOGIN.value,
+                ActionType.LOGOUT.value,
+                ActionType.LOGIN_FAILED.value,
+            ]
+
         query = (
             select(AuditLog)
-            .where(
-                AuditLog.action_type.in_([
-                    ActionType.LOGIN.value,
-                    ActionType.LOGOUT.value,
-                    ActionType.LOGIN_FAILED.value,
-                ])
-            )
+            .where(AuditLog.action_type.in_(action_types))
             .order_by(AuditLog.created_at.desc())
             .limit(limit)
         )

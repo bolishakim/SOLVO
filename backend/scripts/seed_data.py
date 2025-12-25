@@ -24,18 +24,30 @@ from app.core.models import (
 
 
 async def seed_roles(session: AsyncSession) -> None:
-    """Seed default roles if they don't exist."""
+    """Seed default roles if they don't exist, or update existing ones."""
     print("\n--- Seeding Roles ---")
 
     for role_data in DEFAULT_ROLES:
-        # Check if role already exists
+        # Check if role already exists by role_code (stable identifier)
         result = await session.execute(
-            select(Role).where(Role.role_name == role_data["role_name"])
+            select(Role).where(Role.role_code == role_data["role_code"])
         )
         existing_role = result.scalar_one_or_none()
 
         if existing_role:
-            print(f"  [SKIP] Role '{role_data['role_name']}' already exists")
+            # Update existing role with new values (e.g., translated names/descriptions)
+            updated = False
+            if existing_role.role_name != role_data["role_name"]:
+                existing_role.role_name = role_data["role_name"]
+                updated = True
+            if existing_role.description != role_data["description"]:
+                existing_role.description = role_data["description"]
+                updated = True
+
+            if updated:
+                print(f"  [UPDATE] Role '{role_data['role_code']}' updated")
+            else:
+                print(f"  [SKIP] Role '{role_data['role_code']}' already up to date")
         else:
             role = Role(**role_data)
             session.add(role)

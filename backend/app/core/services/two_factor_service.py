@@ -80,7 +80,7 @@ class TwoFactorService:
         # Generate provisioning URI for QR code
         totp = pyotp.TOTP(secret)
         provisioning_uri = totp.provisioning_uri(
-            name=user.email,
+            name=user.username,
             issuer_name=settings.APP_NAME,
         )
 

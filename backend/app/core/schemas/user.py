@@ -8,7 +8,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
-from app.shared.validators import validate_name, validate_phone_number
+from app.shared.validators import validate_name, validate_phone_number, validate_password, validate_username
 
 
 # ═══════════════════════════════════════════════════════════
@@ -69,6 +69,79 @@ class UserUpdate(BaseModel):
         return v
 
 
+class UserAdminCreate(BaseModel):
+    """Schema for admin creating a new user."""
+
+    username: str = Field(
+        ...,
+        min_length=3,
+        max_length=50,
+        description="Username (3-50 chars, alphanumeric with underscore/hyphen)",
+    )
+    email: EmailStr = Field(
+        ...,
+        description="Valid email address",
+    )
+    password: str = Field(
+        ...,
+        min_length=8,
+        max_length=128,
+        description="Password (min 8 chars, uppercase, lowercase, digit)",
+    )
+    first_name: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="First name",
+    )
+    last_name: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="Last name",
+    )
+    phone_number: str | None = Field(
+        default=None,
+        max_length=20,
+        description="Optional phone number",
+    )
+    is_active: bool = Field(
+        default=True,
+        description="Account active status",
+    )
+    is_verified: bool = Field(
+        default=True,
+        description="Email verification status (skip email verification for admin-created users)",
+    )
+    role_ids: list[int] = Field(
+        default_factory=list,
+        description="List of role IDs to assign to the user",
+    )
+
+    @field_validator("username")
+    @classmethod
+    def validate_username_format(cls, v: str) -> str:
+        valid, error = validate_username(v)
+        if not valid:
+            raise ValueError(error)
+        return v
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_strength(cls, v: str) -> str:
+        valid, error = validate_password(v)
+        if not valid:
+            raise ValueError(error)
+        return v
+
+    @field_validator("first_name", "last_name")
+    @classmethod
+    def validate_name_field(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Name cannot be empty")
+        return v.strip()
+
+
 class UserAdminUpdate(BaseModel):
     """Schema for admin updating a user."""
 
@@ -82,13 +155,13 @@ class UserAdminUpdate(BaseModel):
 class RoleAssignRequest(BaseModel):
     """Schema for assigning a role to a user."""
 
-    role_id: int = Field(..., description="Role ID to assign")
+    role_code: str = Field(..., description="Role code to assign")
 
 
 class RoleRemoveRequest(BaseModel):
     """Schema for removing a role from a user."""
 
-    role_id: int = Field(..., description="Role ID to remove")
+    role_code: str = Field(..., description="Role code to remove")
 
 
 class SetUserRolesRequest(BaseModel):

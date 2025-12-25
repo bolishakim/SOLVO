@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     )
 
     # ─── Application ───────────────────────────────────────────
-    APP_NAME: str = "Landfill Management System"
+    APP_NAME: str = "SOLVO"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = False
     API_PREFIX: str = "/api/v1"

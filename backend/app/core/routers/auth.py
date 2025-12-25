@@ -6,7 +6,7 @@ API endpoints for user authentication.
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -19,6 +19,7 @@ from app.core.schemas.auth import (
     LogoutAllRequest,
     ForgotPasswordRequest,
     ResetPasswordRequest,
+    ProfileUpdateRequest,
 )
 from app.core.schemas.session import (
     SessionResponse,
@@ -37,6 +38,7 @@ from app.core.services.auth_service import AuthService
 from app.core.services.user_service import UserService
 from app.core.services.two_factor_service import TwoFactorService
 from app.core.services.password_reset_service import PasswordResetService
+from app.core.services.audit_service import AuditService
 from app.shared.security import verify_password
 from app.core.dependencies import (
     get_current_active_user,
@@ -516,9 +518,7 @@ async def get_me(
     response_description="Profile updated successfully",
 )
 async def update_me(
-    first_name: str | None = None,
-    last_name: str | None = None,
-    phone_number: str | None = None,
+    request: ProfileUpdateRequest,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
@@ -527,7 +527,7 @@ async def update_me(
 
     **Requires:** Valid access token
 
-    **Query Parameters:**
+    **Request Body:**
     - **first_name**: New first name (optional)
     - **last_name**: New last name (optional)
     - **phone_number**: New phone number (optional)
@@ -539,9 +539,9 @@ async def update_me(
 
     updated_user = await user_service.update(
         user_id=current_user.user_id,
-        first_name=first_name,
-        last_name=last_name,
-        phone_number=phone_number,
+        first_name=request.first_name,
+        last_name=request.last_name,
+        phone_number=request.phone_number,
     )
 
     roles = user_service.get_user_roles(updated_user)
@@ -687,6 +687,63 @@ async def revoke_all_sessions(
     return success_response(
         data={"revoked_count": revoked_count},
         message=f"Revoked {revoked_count} session(s)",
+    )
+
+
+# ═══════════════════════════════════════════════════════════
+# LOGIN HISTORY
+# ═══════════════════════════════════════════════════════════
+
+
+@router.get(
+    "/login-history",
+    summary="Get user's login history",
+    response_description="List of login attempts",
+)
+async def get_login_history(
+    current_user: ActiveUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    status: str | None = Query(default=None, description="Filter by status (LOGIN, LOGIN_FAILED)"),
+    limit: int = Query(default=50, ge=1, le=200, description="Max number of entries"),
+    offset: int = Query(default=0, ge=0, description="Offset for pagination"),
+) -> dict[str, Any]:
+    """
+    Get the current user's login history.
+
+    Shows login attempts, failed logins, and logouts for the current user only.
+
+    **Requires:** Valid access token
+
+    **Query Parameters:**
+    - **status**: Filter by LOGIN, LOGIN_FAILED, or LOGOUT (optional)
+    - **limit**: Max entries to return (default: 50, max: 200)
+    - **offset**: Pagination offset (default: 0)
+
+    **Returns:**
+    - List of login history entries with timestamps, IP addresses, and user agents
+    """
+    audit_service = AuditService(db)
+
+    # Get login history for the current user only
+    logs = await audit_service.get_login_history(
+        user_id=current_user.user_id,
+        limit=limit,
+        status_filter=status,
+    )
+
+    log_data = []
+    for log in logs:
+        log_data.append({
+            "log_id": log.log_id,
+            "action_type": log.action_type,
+            "ip_address": log.ip_address,
+            "user_agent": log.user_agent,
+            "description": log.description,
+            "created_at": log.created_at.isoformat() if log.created_at else None,
+        })
+
+    return success_response(
+        data={"data": log_data, "count": len(log_data)},
     )
 
 

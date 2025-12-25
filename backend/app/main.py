@@ -19,6 +19,7 @@ from app.shared.exceptions import AppException
 from app.shared.responses import ErrorCodes
 from app.core.routers import auth_router
 from app.core.routers.admin import router as admin_router
+from app.core.routers.workflows import router as workflows_router
 from app.middleware import (
     RequestIDMiddleware,
     SecurityHeadersMiddleware,
@@ -219,9 +220,11 @@ def create_application() -> FastAPI:
         prefix=settings.API_PREFIX,
         tags=["Admin"],
     )
-
-    # Workflow routers (will be added later)
-    # register_workflows(app)
+    app.include_router(
+        workflows_router,
+        prefix=f"{settings.API_PREFIX}/workflows",
+        tags=["Workflows"],
+    )
 
     return app
 

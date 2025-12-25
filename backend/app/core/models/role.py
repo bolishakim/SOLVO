@@ -122,9 +122,9 @@ class UserRole(Base):
 
 class RoleNames:
     """Constants for role names."""
-    ADMIN = "Admin"
-    STANDARD_USER = "Standard User"
-    VIEWER = "Viewer"
+    ADMIN = "Administrator"
+    STANDARD_USER = "Standardbenutzer"
+    VIEWER = "Betrachter"
 
 
 class RoleCodes:
@@ -139,16 +139,16 @@ DEFAULT_ROLES = [
     {
         "role_name": RoleNames.ADMIN,
         "role_code": RoleCodes.ADMIN,
-        "description": "Full system access - can see all projects and data",
+        "description": "Vollständiger Systemzugriff - kann alle Projekte und Daten sehen",
     },
     {
         "role_name": RoleNames.STANDARD_USER,
         "role_code": RoleCodes.STANDARD_USER,
-        "description": "Limited access - can only see assigned projects",
+        "description": "Eingeschränkter Zugriff - kann nur zugewiesene Projekte sehen",
     },
     {
         "role_name": RoleNames.VIEWER,
         "role_code": RoleCodes.VIEWER,
-        "description": "Read-only access to assigned projects",
+        "description": "Nur-Lese-Zugriff auf zugewiesene Projekte",
     },
 ]

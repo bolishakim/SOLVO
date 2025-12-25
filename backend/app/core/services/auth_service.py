@@ -140,6 +140,15 @@ class AuthService:
         user = await self.user_service.get_by_username_or_email(username_or_email)
 
         if not user:
+            # Log failed login attempt for non-existent user
+            await self.audit_service.log_login(
+                user_id=None,
+                success=False,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                failure_reason="Benutzer nicht gefunden",
+                attempted_username=username_or_email,
+            )
             # Use same error to prevent username enumeration
             raise InvalidCredentialsException()
 
@@ -153,7 +162,7 @@ class AuthService:
         # Verify password
         if not verify_password(password, user.password_hash):
             # Increment failed login attempts
-            await self._record_failed_login(user, ip_address, user_agent)
+            await self._record_failed_login(user, ip_address, user_agent, username_or_email)
             raise InvalidCredentialsException()
 
         # Check if account is active
@@ -174,6 +183,7 @@ class AuthService:
         user: User,
         ip_address: str | None = None,
         user_agent: str | None = None,
+        attempted_username: str | None = None,
     ) -> None:
         """
         Record a failed login attempt and potentially lock the account.
@@ -182,6 +192,7 @@ class AuthService:
             user: User who failed to authenticate
             ip_address: Client IP address
             user_agent: Client user agent
+            attempted_username: The username/email that was attempted
         """
         user.failed_login_attempts += 1
 
@@ -195,7 +206,7 @@ class AuthService:
                 action_type="ACCOUNT_LOCKED",
                 entity_type="USER",
                 entity_id=str(user.user_id),
-                description=f"Account locked after {user.failed_login_attempts} failed login attempts",
+                description=f"Konto nach {user.failed_login_attempts} fehlgeschlagenen Anmeldeversuchen gesperrt",
                 ip_address=ip_address,
                 user_agent=user_agent,
             )
@@ -206,7 +217,8 @@ class AuthService:
             success=False,
             ip_address=ip_address,
             user_agent=user_agent,
-            failure_reason=f"Invalid password (attempt {user.failed_login_attempts}/{self.MAX_FAILED_ATTEMPTS})",
+            failure_reason=f"Falsches Passwort (Versuch {user.failed_login_attempts}/{self.MAX_FAILED_ATTEMPTS})",
+            attempted_username=attempted_username or user.username,
         )
 
         await self.db.commit()

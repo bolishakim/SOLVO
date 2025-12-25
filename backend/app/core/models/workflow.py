@@ -79,10 +79,24 @@ class Workflow(Base):
 
 DEFAULT_WORKFLOWS = [
     {
-        "workflow_name": "Landfill Document Management",
+        "workflow_name": "Deponie-Dokumentenverwaltung",
         "workflow_code": "landfill_mgmt",
         "schema_name": "landfill_mgmt",
-        "description": "Automated waste tracking from PDF documents for construction sites",
+        "description": "Automatische Abfallverfolgung aus PDF-Dokumenten für Baustellen",
+        "is_active": True,
+    },
+    {
+        "workflow_name": "Mitarbeiterstunden-Verwaltung",
+        "workflow_code": "employee_hours",
+        "schema_name": "employee_hours",
+        "description": "Erfassung und Verwaltung von Arbeitszeiten der Mitarbeiter",
+        "is_active": True,
+    },
+    {
+        "workflow_name": "Eingangsrechnungs-Verwaltung",
+        "workflow_code": "incoming_invoices",
+        "schema_name": "incoming_invoices",
+        "description": "Verwaltung und Verarbeitung von Eingangsrechnungen",
         "is_active": True,
     },
 ]

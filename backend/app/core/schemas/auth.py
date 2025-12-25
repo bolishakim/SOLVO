@@ -169,6 +169,36 @@ class LogoutRequest(BaseModel):
     )
 
 
+class ProfileUpdateRequest(BaseModel):
+    """Schema for profile update request."""
+
+    first_name: str | None = Field(
+        default=None,
+        max_length=100,
+        description="First name",
+        examples=["John"],
+    )
+    last_name: str | None = Field(
+        default=None,
+        max_length=100,
+        description="Last name",
+        examples=["Doe"],
+    )
+    phone_number: str | None = Field(
+        default=None,
+        max_length=20,
+        description="Phone number",
+        examples=["+43 123 456 7890"],
+    )
+
+    @field_validator("first_name", "last_name")
+    @classmethod
+    def validate_name(cls, v: str | None) -> str | None:
+        if v is not None and v.strip():
+            return v.strip()
+        return v
+
+
 class LogoutAllRequest(BaseModel):
     """Schema for logout all sessions request."""
 

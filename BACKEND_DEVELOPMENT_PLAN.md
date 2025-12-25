@@ -19,7 +19,7 @@
 ### Folder Structure
 
 ```
-backend/
+SOLVO/
 ├── app/
 │   ├── __init__.py
 │   ├── main.py                      # FastAPI app entry, mounts workflow routers

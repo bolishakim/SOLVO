@@ -25,7 +25,7 @@ from app.config import settings
 
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=settings.DEBUG,  # Log SQL queries in debug mode
+    echo=False,  # Set to True to log SQL queries for debugging
     pool_size=settings.DB_POOL_SIZE,
     max_overflow=settings.DB_MAX_OVERFLOW,
     pool_timeout=settings.DB_POOL_TIMEOUT,

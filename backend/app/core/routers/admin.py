@@ -6,8 +6,9 @@ Admin-only endpoints for user and role management.
 
 from typing import Annotated, Any
 
-from datetime import datetime
-from fastapi import APIRouter, Depends, Query
+from datetime import datetime, timedelta
+from fastapi import APIRouter, Depends, Query, Body
+from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -16,6 +17,7 @@ from app.database import get_db
 from app.core.models import User, Role, UserRole
 from app.core.schemas.user import (
     UserWithRolesResponse,
+    UserAdminCreate,
     UserAdminUpdate,
     RoleAssignRequest,
     RoleResponse,
@@ -25,11 +27,22 @@ from app.core.services.user_service import UserService
 from app.core.services.role_service import RoleService
 from app.core.services.audit_service import AuditService
 from app.core.schemas.audit import AuditLogFilter
-from app.core.models.audit_log import ActionType, EntityType
+from app.core.models.audit_log import ActionType, EntityType, AuditLog
 from app.core.dependencies import require_admin
 from app.shared.responses import success_response, paginated_response
 from app.shared.pagination import PaginationParams, paginate_query
-from app.shared.exceptions import NotFoundException, ValidationException
+from app.shared.exceptions import NotFoundException, ValidationException, ConflictException
+from app.shared.security import hash_password
+
+
+# ═══════════════════════════════════════════════════════════
+# REQUEST SCHEMAS
+# ═══════════════════════════════════════════════════════════
+
+class AdminPasswordResetRequest(BaseModel):
+    """Schema for admin password reset."""
+    new_password: str = Field(..., min_length=8, description="New password (min 8 characters)")
+
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -104,7 +117,8 @@ async def list_users(
     user_service = UserService(db)
     user_data = []
     for user in users:
-        roles = user_service.get_user_roles(user)
+        # Use role codes for API consistency (role_code is used for assign/remove operations)
+        roles = user_service.get_user_role_codes(user)
         user_dict = {
             "user_id": user.user_id,
             "username": user.username,
@@ -126,6 +140,113 @@ async def list_users(
         page=page,
         per_page=page_size,
         total_items=total,
+    )
+
+
+@router.post(
+    "/users",
+    summary="Create new user",
+    response_description="Created user",
+)
+async def create_user(
+    request: UserAdminCreate,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    admin: Annotated[User, Depends(require_admin())],
+) -> dict[str, Any]:
+    """
+    Create a new user account (admin only).
+
+    **Requires:** Admin role
+
+    **Request Body:**
+    - **username**: Username (3-50 chars, alphanumeric with underscore/hyphen)
+    - **email**: Valid email address
+    - **password**: Password (min 8 chars, uppercase, lowercase, digit)
+    - **first_name**: First name
+    - **last_name**: Last name
+    - **phone_number**: Optional phone number
+    - **is_active**: Account active status (default: True)
+    - **is_verified**: Email verification status (default: True)
+    - **role_ids**: List of role IDs to assign (optional)
+    """
+    user_service = UserService(db)
+
+    # Check if username already exists
+    existing_user = await user_service.get_by_username(request.username)
+    if existing_user:
+        raise ConflictException(message="Username already exists")
+
+    # Check if email already exists
+    existing_email = await user_service.get_by_email(request.email)
+    if existing_email:
+        raise ConflictException(message="Email already exists")
+
+    # Hash the password
+    password_hash = hash_password(request.password)
+
+    # Create the user
+    new_user = User(
+        username=request.username,
+        email=request.email,
+        password_hash=password_hash,
+        first_name=request.first_name,
+        last_name=request.last_name,
+        phone_number=request.phone_number,
+        is_active=request.is_active,
+        is_verified=request.is_verified,
+        two_factor_enabled=False,
+    )
+
+    db.add(new_user)
+    await db.commit()
+    await db.refresh(new_user)
+
+    # Assign roles if provided
+    role_service = RoleService(db)
+    if request.role_ids:
+        for role_id in request.role_ids:
+            try:
+                await role_service.assign_role(
+                    user_id=new_user.user_id,
+                    role_id=role_id,
+                    assigned_by=admin.user_id,
+                )
+            except Exception:
+                # Skip invalid role IDs
+                pass
+    else:
+        # Assign default user role if no roles specified
+        default_role = await db.execute(
+            select(Role).where(Role.role_code == "user")
+        )
+        default_role = default_role.scalar_one_or_none()
+        if default_role:
+            await role_service.assign_role(
+                user_id=new_user.user_id,
+                role_id=default_role.role_id,
+                assigned_by=admin.user_id,
+            )
+
+    # Refresh to get roles
+    await db.refresh(new_user)
+    roles = user_service.get_user_roles(new_user)
+
+    return success_response(
+        data={
+            "user_id": new_user.user_id,
+            "username": new_user.username,
+            "email": new_user.email,
+            "first_name": new_user.first_name,
+            "last_name": new_user.last_name,
+            "phone_number": new_user.phone_number,
+            "is_active": new_user.is_active,
+            "is_verified": new_user.is_verified,
+            "two_factor_enabled": new_user.two_factor_enabled,
+            "created_at": new_user.created_at,
+            "last_login_at": new_user.last_login_at,
+            "roles": roles,
+        },
+        message="User created successfully",
     )
 
 
@@ -153,7 +274,8 @@ async def get_user(
     if not user:
         raise NotFoundException(message="User not found")
 
-    roles = user_service.get_user_roles(user)
+    # Use role codes for API consistency (role_code is used for assign/remove operations)
+    roles = user_service.get_user_role_codes(user)
 
     return success_response(
         data={
@@ -243,16 +365,16 @@ async def update_user(
 
 @router.delete(
     "/users/{user_id}",
-    summary="Deactivate user",
+    summary="Deactivate user (DELETE method)",
     response_description="User deactivated",
 )
-async def deactivate_user(
+async def delete_user(
     user_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
     admin: Annotated[User, Depends(require_admin())],
 ) -> dict[str, Any]:
     """
-    Deactivate a user account (soft delete).
+    Deactivate a user account (soft delete) using DELETE method.
 
     This sets `is_active` to False rather than deleting the user.
     The user can be reactivated later by updating their status.
@@ -279,6 +401,179 @@ async def deactivate_user(
     return success_response(
         data={"user_id": user_id, "is_active": False},
         message="User deactivated successfully",
+    )
+
+
+@router.post(
+    "/users/{user_id}/deactivate",
+    summary="Deactivate user",
+    response_description="User deactivated",
+)
+async def deactivate_user(
+    user_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    admin: Annotated[User, Depends(require_admin())],
+) -> dict[str, Any]:
+    """
+    Deactivate a user account.
+
+    This sets `is_active` to False. The user can be reactivated later.
+
+    **Requires:** Admin role
+
+    **Path Parameters:**
+    - **user_id**: User ID
+
+    **Note:** Admin cannot deactivate themselves.
+    """
+    if user_id == admin.user_id:
+        raise ValidationException(message="Cannot deactivate your own account")
+
+    user_service = UserService(db)
+    user = await user_service.get_by_id(user_id)
+
+    if not user:
+        raise NotFoundException(message="User not found")
+
+    user.is_active = False
+    await db.commit()
+
+    return success_response(
+        data={"user_id": user_id, "is_active": False},
+        message="User deactivated successfully",
+    )
+
+
+@router.post(
+    "/users/{user_id}/activate",
+    summary="Activate user",
+    response_description="User activated",
+)
+async def activate_user(
+    user_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    admin: Annotated[User, Depends(require_admin())],
+) -> dict[str, Any]:
+    """
+    Activate a user account.
+
+    This sets `is_active` to True.
+
+    **Requires:** Admin role
+
+    **Path Parameters:**
+    - **user_id**: User ID
+    """
+    user_service = UserService(db)
+    user = await user_service.get_by_id(user_id)
+
+    if not user:
+        raise NotFoundException(message="User not found")
+
+    user.is_active = True
+    await db.commit()
+
+    return success_response(
+        data={"user_id": user_id, "is_active": True},
+        message="User activated successfully",
+    )
+
+
+@router.post(
+    "/users/{user_id}/reset-password",
+    summary="Reset user password",
+    response_description="Password reset successfully",
+)
+async def reset_user_password(
+    user_id: int,
+    request: AdminPasswordResetRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    admin: Annotated[User, Depends(require_admin())],
+) -> dict[str, Any]:
+    """
+    Reset a user's password (admin only).
+
+    **Requires:** Admin role
+
+    **Path Parameters:**
+    - **user_id**: User ID
+
+    **Request Body:**
+    - **new_password**: New password (min 8 chars)
+    """
+    user_service = UserService(db)
+    user = await user_service.get_by_id(user_id)
+
+    if not user:
+        raise NotFoundException(message="User not found")
+
+    # Hash and update password
+    user.password_hash = hash_password(request.new_password)
+    await db.commit()
+
+    # Audit log
+    audit_service = AuditService(db)
+    await audit_service.log_action(
+        action_type=ActionType.UPDATE,
+        user_id=admin.user_id,
+        entity_type=EntityType.USER,
+        entity_id=user_id,
+        description=f"Admin reset password for user {user_id}",
+    )
+
+    return success_response(
+        data={"user_id": user_id},
+        message="Password reset successfully",
+    )
+
+
+@router.post(
+    "/users/{user_id}/disable-2fa",
+    summary="Force disable 2FA for user",
+    response_description="2FA disabled successfully",
+)
+async def force_disable_2fa(
+    user_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    admin: Annotated[User, Depends(require_admin())],
+) -> dict[str, Any]:
+    """
+    Force disable 2FA for a user (admin only).
+
+    Use this when a user has lost access to their authenticator app.
+
+    **Requires:** Admin role
+
+    **Path Parameters:**
+    - **user_id**: User ID
+    """
+    user_service = UserService(db)
+    user = await user_service.get_by_id(user_id)
+
+    if not user:
+        raise NotFoundException(message="User not found")
+
+    if not user.two_factor_enabled:
+        raise ValidationException(message="2FA is not enabled for this user")
+
+    # Disable 2FA
+    user.two_factor_enabled = False
+    user.two_factor_secret = None
+    await db.commit()
+
+    # Audit log
+    audit_service = AuditService(db)
+    await audit_service.log_action(
+        action_type=ActionType.UPDATE,
+        user_id=admin.user_id,
+        entity_type=EntityType.USER,
+        entity_id=user_id,
+        description=f"Admin disabled 2FA for user {user_id}",
+    )
+
+    return success_response(
+        data={"user_id": user_id, "two_factor_enabled": False},
+        message="Two-factor authentication disabled for user",
     )
 
 
@@ -377,7 +672,7 @@ async def assign_role(
     - **user_id**: User ID
 
     **Request Body:**
-    - **role_id**: Role ID to assign
+    - **role_code**: Role code to assign
     """
     user_service = UserService(db)
     user = await user_service.get_by_id(user_id)
@@ -386,13 +681,13 @@ async def assign_role(
         raise NotFoundException(message="User not found")
 
     role_service = RoleService(db)
-    user_role = await role_service.assign_role(
+    user_role = await role_service.assign_role_by_code(
         user_id=user_id,
-        role_id=request.role_id,
+        role_code=request.role_code,
         assigned_by=admin.user_id,
     )
 
-    role = await role_service.get_role_by_id(request.role_id)
+    role = await role_service.get_role_by_code(request.role_code)
 
     return success_response(
         data={
@@ -407,13 +702,13 @@ async def assign_role(
 
 
 @router.delete(
-    "/users/{user_id}/roles/{role_id}",
+    "/users/{user_id}/roles/{role_code}",
     summary="Remove role from user",
     response_description="Role removed",
 )
 async def remove_role(
     user_id: int,
-    role_id: int,
+    role_code: str,
     db: Annotated[AsyncSession, Depends(get_db)],
     admin: Annotated[User, Depends(require_admin())],
 ) -> dict[str, Any]:
@@ -424,7 +719,7 @@ async def remove_role(
 
     **Path Parameters:**
     - **user_id**: User ID
-    - **role_id**: Role ID to remove
+    - **role_code**: Role code to remove
 
     **Note:** Users must have at least one role.
     """
@@ -435,21 +730,21 @@ async def remove_role(
         raise NotFoundException(message="User not found")
 
     role_service = RoleService(db)
-    role = await role_service.get_role_by_id(role_id)
+    role = await role_service.get_role_by_code(role_code)
 
     if not role:
         raise NotFoundException(message="Role not found")
 
     # Prevent admin from removing their own admin role
-    if user_id == admin.user_id and role.role_code == "admin":
+    if user_id == admin.user_id and role_code == "admin":
         raise ValidationException(
             message="Cannot remove admin role from yourself"
         )
 
-    await role_service.remove_role(user_id, role_id)
+    await role_service.remove_role_by_code(user_id, role_code)
 
     return success_response(
-        data={"user_id": user_id, "role_id": role_id},
+        data={"user_id": user_id, "role_code": role_code},
         message=f"Role '{role.role_name}' removed from user",
     )
 
@@ -760,3 +1055,311 @@ async def get_audit_log(
     log_data = await audit_service.enrich_log_with_username(log)
 
     return success_response(data=log_data)
+
+
+# ═══════════════════════════════════════════════════════════
+# ADMIN LOGIN HISTORY
+# ═══════════════════════════════════════════════════════════
+
+
+@router.get(
+    "/login-history",
+    summary="Get paginated login history for all users",
+    response_description="Paginated login history",
+)
+async def get_admin_login_history(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    admin: Annotated[User, Depends(require_admin())],
+    page: int = Query(default=1, ge=1, description="Page number"),
+    page_size: int = Query(default=20, ge=1, le=100, description="Items per page"),
+    user_id: int | None = Query(default=None, description="Filter by user ID"),
+    status: str | None = Query(default=None, description="Filter by status (success/failed)"),
+) -> dict[str, Any]:
+    """
+    Get paginated login history for all users.
+
+    **Requires:** Admin role
+
+    **Query Parameters:**
+    - **page**: Page number (default: 1)
+    - **page_size**: Items per page (default: 20, max: 100)
+    - **user_id**: Filter by specific user (optional)
+    - **status**: Filter by status - 'success' or 'failed' (optional)
+    """
+    # Build query
+    query = select(AuditLog).where(
+        AuditLog.action_type.in_([ActionType.LOGIN, ActionType.LOGIN_FAILED, ActionType.LOGOUT])
+    )
+
+    # Apply filters
+    if user_id:
+        query = query.where(AuditLog.user_id == user_id)
+
+    if status == "success":
+        query = query.where(AuditLog.action_type == ActionType.LOGIN)
+    elif status == "failed":
+        query = query.where(AuditLog.action_type == ActionType.LOGIN_FAILED)
+
+    # Get total count
+    count_query = select(func.count()).select_from(query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar() or 0
+
+    # Apply pagination
+    offset = (page - 1) * page_size
+    query = query.order_by(AuditLog.created_at.desc()).offset(offset).limit(page_size)
+
+    result = await db.execute(query)
+    logs = result.scalars().all()
+
+    audit_service = AuditService(db)
+    log_data = await audit_service.enrich_logs_with_usernames(list(logs))
+
+    return paginated_response(
+        data=log_data,
+        page=page,
+        per_page=page_size,
+        total_items=total,
+    )
+
+
+# ═══════════════════════════════════════════════════════════
+# SECURITY DASHBOARD
+# ═══════════════════════════════════════════════════════════
+
+
+@router.get(
+    "/security/stats",
+    summary="Get security statistics",
+    response_description="Security dashboard statistics",
+)
+async def get_security_stats(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    admin: Annotated[User, Depends(require_admin())],
+) -> dict[str, Any]:
+    """
+    Get security statistics for the dashboard.
+
+    **Requires:** Admin role
+
+    Returns statistics including:
+    - Total users and active users
+    - Users with 2FA enabled
+    - Locked accounts count
+    - Recent failed login attempts
+    """
+    user_service = UserService(db)
+    audit_service = AuditService(db)
+
+    # Get user counts
+    total_users = await db.execute(select(func.count(User.user_id)))
+    total_users = total_users.scalar() or 0
+
+    active_users = await db.execute(
+        select(func.count(User.user_id)).where(User.is_active == True)
+    )
+    active_users = active_users.scalar() or 0
+
+    users_with_2fa = await db.execute(
+        select(func.count(User.user_id)).where(User.two_factor_enabled == True)
+    )
+    users_with_2fa = users_with_2fa.scalar() or 0
+
+    # Get locked accounts (locked_until > now)
+    locked_accounts = await db.execute(
+        select(func.count(User.user_id)).where(
+            User.locked_until != None,
+            User.locked_until > datetime.utcnow()
+        )
+    )
+    locked_accounts = locked_accounts.scalar() or 0
+
+    # Get failed logins in last 24 hours
+    yesterday = datetime.utcnow() - timedelta(hours=24)
+    failed_logins_24h = await db.execute(
+        select(func.count(AuditLog.log_id)).where(
+            AuditLog.action_type == ActionType.LOGIN_FAILED,
+            AuditLog.created_at >= yesterday
+        )
+    )
+    failed_logins_24h = failed_logins_24h.scalar() or 0
+
+    # Get unverified users
+    unverified_users = await db.execute(
+        select(func.count(User.user_id)).where(User.is_verified == False)
+    )
+    unverified_users = unverified_users.scalar() or 0
+
+    # Calculate inactive accounts (users who haven't logged in for 30 days or never logged in)
+    thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+    inactive_accounts = await db.execute(
+        select(func.count(User.user_id)).where(
+            User.is_active == True,
+            (User.last_login_at == None) | (User.last_login_at < thirty_days_ago)
+        )
+    )
+    inactive_accounts = inactive_accounts.scalar() or 0
+
+    # Suspicious activities: count of IPs with 5+ failed logins in last 24h
+    # First, get IPs with >= 5 failed logins
+    suspicious_ips_subquery = (
+        select(AuditLog.ip_address)
+        .where(
+            AuditLog.action_type == ActionType.LOGIN_FAILED,
+            AuditLog.created_at >= yesterday,
+            AuditLog.ip_address != None
+        )
+        .group_by(AuditLog.ip_address)
+        .having(func.count(AuditLog.log_id) >= 5)
+    ).subquery()
+
+    suspicious_result = await db.execute(
+        select(func.count()).select_from(suspicious_ips_subquery)
+    )
+    suspicious_count = suspicious_result.scalar() or 0
+
+    return success_response(
+        data={
+            "total_users": total_users,
+            "active_users": active_users,
+            "inactive_users": total_users - active_users,
+            "users_with_2fa": users_with_2fa,
+            "users_without_2fa": active_users - users_with_2fa,
+            "locked_accounts": locked_accounts,
+            "failed_logins_24h": failed_logins_24h,
+            "unverified_users": unverified_users,
+            "two_factor_adoption_rate": round(users_with_2fa / active_users * 100, 1) if active_users > 0 else 0,
+            "inactive_accounts": inactive_accounts,
+            "suspicious_activities": suspicious_count,
+        }
+    )
+
+
+@router.get(
+    "/security/locked-accounts",
+    summary="Get locked accounts",
+    response_description="List of currently locked accounts",
+)
+async def get_locked_accounts(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    admin: Annotated[User, Depends(require_admin())],
+) -> dict[str, Any]:
+    """
+    Get list of currently locked user accounts.
+
+    **Requires:** Admin role
+    """
+    result = await db.execute(
+        select(User)
+        .where(
+            User.locked_until != None,
+            User.locked_until > datetime.utcnow()
+        )
+        .order_by(User.locked_until.desc())
+    )
+    locked_users = result.scalars().all()
+
+    accounts = []
+    for user in locked_users:
+        accounts.append({
+            "user_id": user.user_id,
+            "username": user.username,
+            "email": user.email,
+            "locked_until": user.locked_until.isoformat() if user.locked_until else None,
+            "failed_login_attempts": user.failed_login_attempts,
+            "last_failed_login": user.last_failed_login.isoformat() if user.last_failed_login else None,
+        })
+
+    return success_response(
+        data={
+            "accounts": accounts,
+            "count": len(accounts),
+        }
+    )
+
+
+@router.get(
+    "/security/failed-logins",
+    summary="Get recent failed login attempts",
+    response_description="List of recent failed login attempts",
+)
+async def get_failed_logins(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    admin: Annotated[User, Depends(require_admin())],
+    hours: int = Query(default=24, ge=1, le=168, description="Hours to look back"),
+) -> dict[str, Any]:
+    """
+    Get recent failed login attempts.
+
+    **Requires:** Admin role
+
+    **Query Parameters:**
+    - **hours**: Number of hours to look back (default: 24, max: 168/1 week)
+    """
+    since = datetime.utcnow() - timedelta(hours=hours)
+
+    result = await db.execute(
+        select(AuditLog)
+        .where(
+            AuditLog.action_type == ActionType.LOGIN_FAILED,
+            AuditLog.created_at >= since
+        )
+        .order_by(AuditLog.created_at.desc())
+        .limit(100)
+    )
+    failed_logins = result.scalars().all()
+
+    audit_service = AuditService(db)
+    logs = await audit_service.enrich_logs_with_usernames(list(failed_logins))
+
+    return success_response(
+        data={
+            "logs": logs,
+            "count": len(logs),
+            "hours": hours,
+        }
+    )
+
+
+@router.get(
+    "/security/users-without-2fa",
+    summary="Get users without 2FA",
+    response_description="List of active users without 2FA enabled",
+)
+async def get_users_without_2fa(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    admin: Annotated[User, Depends(require_admin())],
+) -> dict[str, Any]:
+    """
+    Get list of active users who haven't enabled two-factor authentication.
+
+    **Requires:** Admin role
+    """
+    result = await db.execute(
+        select(User)
+        .where(
+            User.is_active == True,
+            User.two_factor_enabled == False
+        )
+        .order_by(User.created_at.desc())
+    )
+    users = result.scalars().all()
+
+    user_list = []
+    for user in users:
+        user_list.append({
+            "user_id": user.user_id,
+            "username": user.username,
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "created_at": user.created_at.isoformat() if user.created_at else None,
+            "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+        })
+
+    return success_response(
+        data={
+            "users": user_list,
+            "count": len(user_list),
+        }
+    )

@@ -88,7 +88,7 @@ class AuditLogResponse(BaseModel):
                 "entity_type": "USER",
                 "entity_id": "5",
                 "changes": None,
-                "description": "User logged in successfully",
+                "description": "Benutzer erfolgreich angemeldet",
                 "ip_address": "192.168.1.100",
                 "user_agent": "Mozilla/5.0...",
                 "request_id": "req-abc123",
